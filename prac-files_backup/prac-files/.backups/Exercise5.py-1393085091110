@@ -1,0 +1,74 @@
+import particleDataStructures as pds
+from BrickPi import *   #import BrickPi.py file to use BrickPi operations
+from numpy import *
+
+
+def initialise(self):
+    """Initialise various ports value
+       and location varables
+    """
+    self.LEFT_MOTOR = PORT_A
+    self.RIGHT_MOTOR = PORT_C
+    
+    self.LEFT_TOUCHSENSOR = PORT_3
+    self.RIGHT_TOUCHSENSOR = PORT_1
+    self.SONAR_SENSOR = PORT_2
+
+    self.current_x = 0
+    self.current_y = 0
+    self.current_theta = 0.0
+    
+def bumper_left_hit():
+    """get left bumper sensor data
+    """
+    return BrickPi.Sensor[LEFT_TOUCHSENSOR]
+
+def bumper_right_hit():
+    """get right bumper sensor data
+    """
+    return BrickPi.Sensor[RIGHT_TOUCHSENSOR]
+
+def get_distance_measurement():
+    """get sonar sensor data
+    """
+    return BrickPi.Sensor[SONAR_SENSOR]
+
+def calculate_depth(wallCoord, location, float theta):
+    """calculated excepted depth for a 
+       given particle(pds.data) and give wall
+    """
+    numerator = (wallCoord.by - wallCoord.ay)*(wallCoord.ax - location.x) - (wallCoord.bx - wallCoord.ax)*(wallCoord.ay - location.y)
+    denominator = (wallCoord.by - wallCoord.ay)*math.cos(theta) - (wallCoord.bx - wallCoord.ax)*math.sin(theta)
+    depth = numerator/denominator
+    
+    return depth
+
+
+def calculate likelihood(float x, float y, float theta, float z):
+    currentShortestDepth = 0 # index of the wall that the "depth" is the shortest
+    for wall in self.walls:
+        wallCoord.ax = wall[0]
+        wallCoord.ay = wall[1]
+        wallCoord.bx = wall[2]
+        wallCoord.by = wall[3]
+        
+        loc.x = x
+        loc.y = y
+        
+        depth = calculate_depth(wallCoord, loc, theta)
+        
+        # hits point
+        hitPoint.x = x + depth*math.cos(theta)
+        hitPoint.y = y + depth*math.sin(theta)
+        
+        # check in range
+        inrange = hitPoint.x < max(wallCoord.ax, wallCoord.bx) and\
+                  hitPoint.x > min(wallCoord.ax, wallCoord.bx) and\
+                  hitPoint.y < max(wallCoord.ay, wallCoord.by) and\
+                  hitPoint.y > min(wallCoord.ay, wallCoord.by)
+        
+        if(inrange and depth < currentShortestDepth):
+            currentShortestDepth = depth
+            
+    # 
+    

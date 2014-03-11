@@ -1,0 +1,26 @@
+import time
+import sys
+import thread
+
+def function1(n):
+    for i in range(n):
+        print "function1" + str(i)
+        time.sleep(0.5)
+
+def function2(n):
+    for i in range(n):
+        print "function2"+str(i)
+	time.sleep(0.7)
+def test1():
+    try:
+        thread.start_new_thread(function1, (10,))
+        thread.start_new_thread(function2, (7,))
+        thread.interrupt_main()
+    except:
+        print "error"
+
+while True:
+    print "test1"
+    print ""
+    test1()    
+    time.sleep(1)

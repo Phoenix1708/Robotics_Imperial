@@ -1,0 +1,441 @@
+from BrickPi import *   #import BrickPi.py file to use BrickPi operations
+from numpy import *
+import random
+import os
+import threading
+from collections import Counter
+    
+LEFT_MOTOR = PORT_A
+RIGHT_MOTOR = PORT_C
+SONAR_MOTOR = PORT_B
+
+LEFT_TOUCHSENSOR = PORT_3
+RIGHT_TOUCHSENSOR = PORT_2
+SONAR_SENSOR = PORT_2
+
+# threadshold for depth histgram 
+histThreshold = 5000000# initialisation
+hit = False
+
+# mutex = threading.Lock()
+# condition = threading.Condition()
+
+##################################################################################
+''' This part is the motion of the robot'''
+##################################################################################
+def initialise():
+    BrickPiSetup()  # setup the serial port for communication
+
+    BrickPi.MotorEnable[LEFT_MOTOR] = 1 #Enable the Motor A
+    BrickPi.MotorEnable[RIGHT_MOTOR] = 1 #Enable the Motor B
+    BrickPi.MotorEnable[SONAR_MOTOR] = 1 #Enable the Motor which control the rotation of sonar sensor
+    
+    BrickPi.SensorType[LEFT_TOUCHSENSOR] = TYPE_SENSOR_TOUCH   #Set the type of sensor
+    BrickPi.SensorType[RIGHT_TOUCHSENSOR] = TYPE_SENSOR_TOUCH   #Set the type of sensor
+    BrickPi.SensorType[SONAR_SENSOR] = TYPE_SENSOR_ULTRASONIC_CONT # Set up ultrsonic sensor
+    
+    BrickPiSetupSensors()
+
+def forward(distance):
+    motorRotateDegree([100,115],[18.75*distance,18.25*distance],[LEFT_MOTOR,RIGHT_MOTOR])
+
+def turn(degrees):
+    motorRotateDegree([100,90],[-1*degrees,1*degrees],[LEFT_MOTOR,RIGHT_MOTOR])
+    
+def rotateSonarSensor(degrees):
+    # BrickPi.MotorSpeed[SONAR_MOTOR] = 10
+    # 0.0174532925
+    motorRotateDegree([150],[degrees],[SONAR_MOTOR], SONAR_SENSOR_PORT)
+    # motorRotateDegree([100],[0.0174532925],[SONAR_MOTOR])
+    
+def bumper_left_hit():
+    """get left bumper sensor data
+    """
+    return BrickPi.Sensor[LEFT_TOUCHSENSOR]
+
+def bumper_right_hit():
+    """get right bumper sensor data
+    """
+    return BrickPi.Sensor[RIGHT_TOUCHSENSOR]
+
+def get_distance_measurement():
+    """get sonar sensor data
+    """
+    result = BrickPiUpdateValues()  # Ask BrickPi to update values for sensors/$
+    value = 0
+    if not result :
+        value = BrickPi.Sensor[SONAR_SENSOR]     #BrickPi.Sensor[PORT] stores the value$
+    time.sleep(.01)     # sleep for 10 ms
+    return value
+
+def rotateSonar(angle, direct):
+    print "rotating " + str(angle)
+    rotateSonarSensor(angle*direct)
+        
+def rotatePI(direct, ls=None):
+    '''# 13 time "1 degree" rotate motorRotateDegree 
+    # 80 time "1 degree" rotate motorRotateDegree
+    degree = 40
+    while degree > 0:
+        
+        measurements = []
+        # make measurement 10 times and take the mean
+        if ls != None:
+            
+        
+        rotateSonarSensor(1.0*direct)
+        #turn(0.03141926)
+        degree -= 1
+    
+    # return ls'''
+
+##################################################################################
+''' Location Signature classes'''
+##################################################################################
+        
+# Location signature class: stores a signature characterizing one location
+class LocationSignature:
+    def __init__(self, no_bins = 80):
+        self.sig = [] # [0] * no_bins
+        
+    def print_signature(self):
+        for i in range(len(self.sig)):
+            print self.sig[i]
+
+# --------------------- File management class ---------------
+class SignatureContainer():
+    def __init__(self, size = 5):
+        self.size      = size; # max number of signatures that can be stored
+        self.filenames = [];
+        
+        # Fills the filenames variable with names like loc_%%.dat 
+        # where %% are 2 digits (00, 01, 02...) indicating the location number. 
+        for i in range(self.size):
+            self.filenames.append('loc_{0:02d}.dat'.format(i))
+
+    # Get the index of a filename for the new signature. If all filenames are 
+    # used, it returns -1;
+    def get_free_index(self):
+        n = 0
+        while n < self.size:
+            if (os.path.isfile(self.filenames[n]) == False):
+                break
+            n += 1
+            
+        if (n >= self.size):
+            return -1;
+        else:    
+            return n;
+
+    # Delete all loc_%%.dat files
+    def delete_loc_files(self):
+        print "STATUS:  All signature files removed."
+        for n in range(self.size):
+            if os.path.isfile(self.filenames[n]):
+                os.remove(self.filenames[n])
+            
+    # Writes the signature to the file identified by index (e.g, if index is 1
+    # it will be file loc_01.dat). If file already exists, it will be replaced.
+    def save(self, signature, index):
+        filename = self.filenames[index]
+        if os.path.isfile(filename):
+            os.remove(filename)
+            
+        f = open(filename, 'w')
+
+        for i in range(len(signature.sig)):
+            s = str(signature.sig[i]) + "\n"
+            f.write(s)
+        f.close();
+
+    # Read signature file identified by index. If the file doesn't exist
+    # it returns an empty signature.
+    def read(self, index):
+        ls = LocationSignature()
+        filename = self.filenames[index]
+        print ls.sig
+        print filename
+        if os.path.isfile(filename):
+            #f = open(filename, 'r')
+            with open(filename) as fp:
+                for line in fp:
+                    if (line != ''):
+                        ls.sig.append(int(float(line.replace("\n", ""))))
+            '''for i in range(ls.bins):
+                s = f.readline()
+                if (s != ''):
+                    ls.sig.append(int(float(s.replace("\n", ""))))'''
+                    #ls.sig[i] = int(s)
+            #f.close();
+            fp.close();
+        else:
+            print "WARNING: Signature does not exist."
+        print ls.sig
+        return ls
+    
+##################################################################################
+''' Location Signature application '''
+##################################################################################
+
+
+##################################################################################
+'''Thread which get distance measurement from sencer '''
+##################################################################################
+'''class ReadFromSensor(threading.Thread):
+    def __init__(self, ls):
+        super(ReadFromSensor, self).__init__()
+        self._stop = threading.Event()
+        self.ls = ls
+        
+    def run(self):
+        
+        # call barrier
+        print "reading is acquiring"
+        condition.acquire()
+        print "reading is ready to notify"
+        condition.notify()
+        condition.release()
+        
+        # keep reading
+        while True:
+            measurements = []
+            count = 5
+            m = 0.0
+            while count > 0:
+                m = get_distance_measurement()
+                measurements.append(m)
+                count -= 1
+                # print str(m)
+                dis = int(mean(measurements))
+
+            self.ls.sig.append(dis)
+            
+    def getResult(self):
+        return self.ls
+    
+    def stop(self):
+        self._stop.set()
+        
+    def stopped(self):
+        return self._stop.isSet()'''
+
+def shapeList(alist,size):
+    list_size = len(alist)
+    scale = float(list_size)/float(size)
+    new_list = alist*3
+    result = []
+    for i in range(size):
+        low_bound = int(round(scale*(i-1.5)+list_size))
+        up_bound = int(round(scale*(i+1.5)+ list_size))
+        print new_list[low_bound:up_bound]
+        value = median(new_list[low_bound:up_bound])
+        print value
+        result.append(value)
+    return result
+
+# FILL IN: spin robot or sonar to capture a signature and store it in ls
+def characterize_location(ls, learning):
+    # print "TODO:    You should implement the function that captures a signature."    
+    '''for i in range(len(ls.sig)):
+        ls.sig[i] = random.randint(0, 255)'''
+
+        # rotatePI(1)
+    
+    # Innitual read thread
+    '''read = ReadFromSensor(ls)
+    read.start()
+    
+    # wait for the read thread to start
+    print "main is acquiring"
+    condition.acquire()
+    print "main is waiting"
+    condition.wait()
+    print "main is running"'''
+    
+    # rotateSonar(860*2+100, -1)
+    if learning:
+        print "rotate to starting location"
+        # rotateSonar(860, 1)
+        motorRotateDegree([200],[6.8*180],[SONAR_MOTOR],[SONAR_SENSOR],ls,False)
+        print "reading..."
+        ls = motorRotateDegree([90],[(7.1*180)*2.0*(-1)],[SONAR_MOTOR],[SONAR_SENSOR],ls,True)
+        ls.sig = shapeList(ls.sig,360)
+        print len(ls.sig)
+        motorRotateDegree([200],[7.2*180],[SONAR_MOTOR],[SONAR_SENSOR],ls,False)
+    else:
+        print "rotate to starting location"
+        # rotateSonar(860, 1)
+        motorRotateDegree([200],[6.8*180],[SONAR_MOTOR],[SONAR_SENSOR],ls,False)
+        print "reading..."
+        ls = motorRotateDegree([90],[(7.1*180)*2.0*(-1)],[SONAR_MOTOR],[SONAR_SENSOR],ls,True)
+        ls.sig = shapeList(ls.sig,360)
+        print len(ls.sig)
+        motorRotateDegree([200],[7.2*180],[SONAR_MOTOR],[SONAR_SENSOR],ls,False)
+        '''
+        print "reading..."
+        ls = motorRotateDegree([90],[(6.8*)*(-1)],[SONAR_MOTOR],[SONAR_SENSOR],ls,True)
+        motorRotateDegree([200],[6.9*100],[SONAR_MOTOR],[SONAR_SENSOR],ls,False)'''
+        '''global histThreshold
+        histThreshold = len(ls.sig)*pow(5,2) if histThreshold == 0 else histThreshold'''
+    
+    # stop the reading thread
+    '''ls = read.getResult()
+    
+    while not read.stopped():
+        read.stop()
+        
+    print "reading thread stop called"
+    read.join()
+    print "condition released"
+    condition.release()'''
+    
+    print "rotate back"
+    # rotateSonar(860, 1)
+    #motorRotateDegree([150],[880],[SONAR_MOTOR],ls,SONAR_SENSOR,False)
+    #rotatePI(1)
+
+# FILL IN: compare two signatures
+def compare_signatures(ls_obs, ls_read):
+    print "ls_obs size: " + str(len(ls_obs.sig))
+    print "ls_read size: " + str(len(ls_read.sig))
+    dist = 0
+    #print "TODO:    You should implement the function that compares two signatures."
+    # the number of signatures during observation might not be exactly the same as reading
+
+    # double the previously reading
+    '''new_ls_read = ls_read.sig
+    new_ls_obs = ls_obs.sig
+    corrList = correlate(new_ls_read*2, new_ls_obs, 'full')
+    corrIdx = argsort(corrList)[::-1]
+    idx = max(corrIdx[0:3])
+    maxcorr = corrList[idx] 
+    print idx
+    idx = idx - len(new_ls_obs)
+    print idx
+    if idx > len(new_ls_read):
+        idx = idx - len(new_ls_read)
+    print idx
+    scale = 360.0/float(len(new_ls_read))
+    print "scale " + str(scale)
+    print "degree: "+ str(scale*(idx+0.5))
+    angle = -180 + scale*(idx + 0.5)'''
+    freq_read = cal_freq2(ls_read.sig)
+    freq_obs = cal_freq2(ls_obs.sig)
+    freq_dif = sum(list(array(freq_read)-array(freq_obs)))
+    return freq_dif
+
+def cal_freq1(list):
+    freq = [0]*255
+    counter_list = Counter(list).items()
+    for i in range(len(counter_list)):
+        freq[counter_list[i][0]] = counter_list[i][1]
+    return freq
+
+
+def cal_freq2(list):
+    freq = []*26
+    for i in range(len(list)):
+        freq[int(list[i]/10)] += 1
+    return freq
+# This function characterizes the current location, and stores the obtained 
+# signature into the next available file.
+def learn_location():
+    ls = LocationSignature()
+    characterize_location(ls, True)
+    idx = signatures.get_free_index();
+    if (idx == -1): # run out of signature files
+        print "\nWARNING:"
+        print "No signature file is available. NOTHING NEW will be learned and stored."
+        print "Please remove some loc_%%.dat files.\n"
+        return
+    
+    signatures.save(ls,idx)
+    print "STATUS:  Location " + str(idx) + " learned and saved."
+    
+def cal_angle(ls_obs, ls_read):
+    #print "TODO:    You should implement the function that compares two signatures."
+    reads = ls_read.sig * 2
+    obs = ls_obs.sig
+    print len(ls_read.sig)
+    print "ls_read     "+str(ls_read.sig)
+    print len(ls_obs.sig)
+    print "ls_obs      "+str(ls_obs.sig)
+    min_distance = float('inf') 
+    min_index = 0
+    for i in range(len(reads)/2):
+        distance = 0
+        for j in range(len(obs)):
+            distance += sqrt(power((reads[i+j] - obs[j]),2))
+        if distance < min_distance:
+            min_distance = distance
+            min_index = i
+    if min_index > len(ls_read.sig):        
+        min_index = min_index - len(ls_read.sig)
+    
+    print "min_distance: "+ str(min_distance)
+    print "min_index: " + str(min_index)
+    scale = 360.0/float(len(ls_read.sig))
+    angle = 180 - scale*(min_index+0.5)
+    return angle
+
+# This function tries to recognize the current location.
+# 1.   Characterize current location
+# 2.   For every learned locations
+# 2.1. Read signature of learned location from file
+# 2.2. Compare signature to signature coming from actual characterization
+# 3.   Retain the learned location whose minimum distance with
+#      actual characterization is the smallest.
+# 4.   Display the index of the recognized location on the screen
+def recognize_location():
+    ls_obs = LocationSignature();
+    characterize_location(ls_obs, False);
+
+    best_idx = -1
+    currentMax = histThreshold
+    
+    # FILL IN: COMPARE ls_read with ls_obs and find the best match
+    for idx in range(signatures.size):
+        print "STATUS:  Comparing signature " + str(idx) + " with the observed signature."
+        ls_read = signatures.read(idx);
+        result    = compare_signatures(ls_obs, ls_read)
+        
+        print "checking location: " + str(idx)
+        
+        if result < currentMax:
+            print currentMax
+            currentMax = result
+            best_idx = idx
+            print "At location: " + str(idx)
+    if best_idx != -1:
+        ls_read = signatures.read(best_idx)
+        angle = cal_angle(ls_obs,ls_read)
+        print angle
+    else:
+        print "Not in any location"
+            
+if __name__ == "__main__":
+    
+    initialise()
+    
+    signatures = SignatureContainer(1);
+    # signatures.delete_loc_files()
+    
+    print "learning..."
+    learn_location();
+    print "recognizing..."
+    recognize_location();
+    
+    '''rotatePI(1)
+    # reset for cable.......
+    count = 40
+    while count > 0:
+        rotateSonarSensor(1.0*(-1))
+        count -= 1
+    try:
+        thread.start_new_thread( print_time, ("Thread-1", 2, ) )
+        thread.start_new_thread( print_time, ("Thread-2", 4, ) )
+    except:
+        print "Error: unable to start thread"'''
+    #rotatePI(-1, False)
+    #rotatePI(-1, True)
+

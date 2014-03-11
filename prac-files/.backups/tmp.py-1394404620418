@@ -1,0 +1,38 @@
+from numpy import *
+
+def shapeList(alist,size):
+    list_size = len(alist)
+    scale = float(list_size)/float(size)
+    new_list = alist*3
+    result = []
+    for i in range(size):
+        low_bound = int(round(scale*(i-1.5)+list_size))
+        up_bound = int(round(scale*(i+1.5)+ list_size))
+        print new_list[low_bound:up_bound]
+        value = median(new_list[low_bound:up_bound])
+        print value
+        result.append(value)
+    return result
+
+def shapeLists(lists,size):
+    for i in range(len(lists)):
+        lists[i] = shapeList(lists[i],size)
+    result = []
+    for i in range(size):
+        value = map(list, zip(*lists))
+        value = median(value[i])
+        result.append(median)
+    return result
+
+
+if __name__ == "__main__":
+    a = random.random((1,400))
+    a = a[0]
+    a = list(a)
+    b = a[100:]
+    a = range(1,400)
+    b = range(1,200)
+    print a
+    print shapeList(a,360)
+    #print shapeList(b,360)
+    print len(shapeLists([a,b],360))

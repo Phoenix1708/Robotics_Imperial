@@ -1,0 +1,196 @@
+import particleDataStructures as pds
+from BrickPi import *   #import BrickPi.py file to use BrickPi operations
+from numpy import *
+import random
+
+LEFT_MOTOR = PORT_A
+RIGHT_MOTOR = PORT_C
+
+LEFT_TOUCHSENSOR = PORT_3
+RIGHT_TOUCHSENSOR = PORT_1
+SONAR_SENSOR = PORT_2
+
+current_x = 0
+current_y = 0
+current_theta = 0.0
+
+stdDev = 0.2
+likeliOffset = 0.1
+likeliThreshold = 0.2
+angleThreshold = 0.558505361 # 32 degree
+numOfParticles = 100
+
+angleChecks = 0 # counter for angle check reported from all particles
+    
+def bumper_left_hit():
+    """get left bumper sensor data
+    """
+    return BrickPi.Sensor[LEFT_TOUCHSENSOR]
+
+def bumper_right_hit():
+    """get right bumper sensor data
+    """
+    return BrickPi.Sensor[RIGHT_TOUCHSENSOR]
+
+def get_distance_measurement():
+    """get sonar sensor data
+    """
+    return BrickPi.Sensor[SONAR_SENSOR]
+
+def calculate_depth(wallCoord, location, theta):
+    """calculated excepted depth for a 
+       given particle(pds.data) and give wall
+    """
+    numerator = (wallCoord.by - wallCoord.ay)*(wallCoord.ax - location.x) - (wallCoord.bx - wallCoord.ax)*(wallCoord.ay - location.y)
+    denominator = (wallCoord.by - wallCoord.ay)*math.cos(theta) - (wallCoord.bx - wallCoord.ax)*math.sin(theta)
+    depth = numerator/denominator
+    
+    return depth
+
+def check_angle(wallCoord):
+    """check whether the current angle to the wall in the front
+    """
+    numerator = (math.cos(theta)*(wallCoord.ay - wallCoord.by) + math.sin(theta)*(wallCoord.bx - wallCoord.ax))
+    denominator = math.sqrt(pow((wallCoord.ay - wallCoord.by),2) + pow((wallCoord.bx - wallCoord.ax),2))
+    beta = math.acos(numerator/denominator)
+    
+    # return whether angle is too big
+    return beta > angleThreshold
+
+class Coordinate:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+def calculate_likelihood(px, py, theta, z):
+    """calculated likelihood for one particle and the 
+       expected depth to the closeted wall in the front
+    """
+    wallIndex = 0;        # index of the wall that the "depth" is the shortest
+    
+    currentShortestDepth = 0.0
+    for wall in pds.mymap.walls:
+        
+        wallCoord = Coordinate(ax = wall[0], ay = wall[1], bx = wall[2], by = wall[3])
+        loc = Coordinate(x = px, y = px)
+        
+        depth = calculate_depth(wallCoord, loc, theta)
+        
+        # hits point
+        hitPoint = Coordinate(x = px + depth*math.cos(theta), y = py + depth*math.sin(theta))
+        
+        # check hitpoint is in the range of the wall
+        inrange = hitPoint.x < max(wallCoord.ax, wallCoord.bx) and\
+                  hitPoint.x > min(wallCoord.ax, wallCoord.bx) and\
+                  hitPoint.y < max(wallCoord.ay, wallCoord.by) and\
+                  hitPoint.y > min(wallCoord.ay, wallCoord.by)
+        
+        if(inrange and depth < currentShortestDepth):
+            currentShortestDepth = depth
+            wallIndex = pds.mymap.walls.index(wall)
+            
+    # calculate likelihood
+    likelihood = math.exp(-(pow((currentShortestDepth - z),2))/(2*pow(stdDev,2)))/(stdDev*math.sqrt(2*math.pi)) + likeliOffset
+    
+    # check angle
+    front_wall = pds.mymap.walls[wallIndex]
+    frontWallCoord = Coordinate(ax = front_wall[0], ay = front_wall[1], bx = front_wall[2], by = front_wall[3])
+    if check_angle(frontWallCoord):
+        angleChecks += check
+    
+    return likelihood
+
+def noise_e():
+    return random.gauss(0, stdDev)
+
+def noise_f():
+    return random.gauss(0, stdDev)
+
+def noise_g():
+    return random.gauss(0, stdDev)
+
+def update_theta(update, old_theta):
+    ''' update the angle theta taking care of
+        angular wrap-around
+    '''
+    new_theta = update + old_theta
+    if(new_theta > math.pi):
+        new_theta = new_theta - math.pi
+    elif(new_theta < -math.pi):
+        new_theta = new_theta + math.pi
+        
+    return new_theta
+
+def forward_renew_particle(D, particle):
+    '''straight line movement particle update
+    '''
+    # sonar_measure
+    #z = get_distance_measurement()
+    z = 100
+        
+    e = noise_e()
+
+    # new_x
+    particle[0] = particle[0]+(D+e)*math.cos(particle[2])
+    # new_y
+    particle[1] = particle[1]+(D+e)*math.sin(particle[2])
+    # new_theta
+    particle[2] = update_theta(noise_f(), particle[2])
+
+    likelihood = calculate_likelihood(particle[0], particle[1], particle[2], z)
+    #print "likelihood " + str(likelihood)
+    
+    # new_weight
+    particle[3] = likelihood*particle[3]
+    #print "particle " + str(particle)
+    
+    return particle
+
+def turn_renew_particle(alpha, particle):
+    '''pure rotation particle update
+    '''
+    #z = get_distance_measurement()
+    z = 100
+    
+    # new_theta
+    particle[2] = update_theta(alpha + noise_g(), particle[2])
+    
+    likelihood = calculate_likelihood(particle[0], particle[1], particle[2], z)
+    #print "likelihood " + str(likelihood)
+    
+    # new_weight
+    particle[3] = likelihood*particle[3]
+    #print "particle " + str(particle)
+    
+    return particle
+
+def renew_particles(motion, operation):
+    '''update particle depends on motion type
+    '''
+
+    if operation == "forward":
+        particles.data = [forward_renew_particle(motion.forwardDis, particle) for particle in particles.data]
+
+    elif operation == "turn":
+        particles.data = [turn_renew_particle(motion.rotateAngle, list(particle)) for particle in particles.data]
+        
+    print "particles " + str(particles.data)
+    particles.update(particles.data)
+        
+    return particles
+    
+if __name__ == "__main__":
+    
+    particles = pds.Particles()
+    
+    #while True:
+    #particles.update()
+    #particles.draw()
+    motion = Coordinate(rotateAngle = math.pi/2)
+    renew_particles(motion, "turn")
+    #t += 0.05
+    #time.sleep(0.05)
+    #check_angle()
+    
+    
+    #likelihood < likeliThreshold
+    

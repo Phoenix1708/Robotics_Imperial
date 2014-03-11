@@ -1,0 +1,163 @@
+import particleDataStructures as pds
+from BrickPi import *   #import BrickPi.py file to use BrickPi operations
+from numpy import *
+
+def initialise(self):
+    """Initialise various ports value
+       and location varables
+    """
+    self.LEFT_MOTOR = PORT_A
+    self.RIGHT_MOTOR = PORT_C
+    
+    self.LEFT_TOUCHSENSOR = PORT_3
+    self.RIGHT_TOUCHSENSOR = PORT_1
+    self.SONAR_SENSOR = PORT_2
+
+    self.current_x = 0
+    self.current_y = 0
+    self.current_theta = 0.0
+    
+    self.stdDev = 0.2
+    self.offset = 0.1
+    self.likeliThreshold = 0.2
+    self.angleThreshold = 0.558505361 # 32 degree
+    self.numOfParticles = 100
+    
+def bumper_left_hit():
+    """get left bumper sensor data
+    """
+    return BrickPi.Sensor[LEFT_TOUCHSENSOR]
+
+def bumper_right_hit():
+    """get right bumper sensor data
+    """
+    return BrickPi.Sensor[RIGHT_TOUCHSENSOR]
+
+def get_distance_measurement():
+    """get sonar sensor data
+    """
+    return BrickPi.Sensor[SONAR_SENSOR]
+
+def calculate_depth(wallCoord, location, theta):
+    """calculated excepted depth for a 
+       given particle(pds.data) and give wall
+    """
+    numerator = (wallCoord.by - wallCoord.ay)*(wallCoord.ax - location.x) - (wallCoord.bx - wallCoord.ax)*(wallCoord.ay - location.y)
+    denominator = (wallCoord.by - wallCoord.ay)*math.cos(theta) - (wallCoord.bx - wallCoord.ax)*math.sin(theta)
+    depth = numerator/denominator
+    
+    return depth
+
+def calculate_likelihood(x, y, theta, z):
+    """calculated likelihood for one particle and the 
+       expected depth to the closeted wall in the front
+    """
+    self.wallIndex = 0;        # index of the wall that the "depth" is the shortest
+    
+    currentShortestDepth = 0
+    for wall in pds.walls:
+        wallCoord.ax = wall[0]
+        wallCoord.ay = wall[1]
+        wallCoord.bx = wall[2]
+        wallCoord.by = wall[3]
+        
+        loc.x = x
+        loc.y = y
+        
+        depth = calculate_depth(wallCoord, loc, theta)
+        
+        # hits point
+        hitPoint.x = x + depth*math.cos(theta)
+        hitPoint.y = y + depth*math.sin(theta)
+        
+        # check in range
+        inrange = hitPoint.x < max(wallCoord.ax, wallCoord.bx) and\
+                  hitPoint.x > min(wallCoord.ax, wallCoord.bx) and\
+                  hitPoint.y < max(wallCoord.ay, wallCoord.by) and\
+                  hitPoint.y > min(wallCoord.ay, wallCoord.by)
+        
+        if(inrange and depth < currentShortestDepth):
+            currentShortestDepth = depth
+            self.wallIndex = self.walls.index(wall)
+            
+    # calculate likelihood
+    likelihood = math.exp(-(pow((currentShortestDepth - z),2))/(2*pow(self.stdDev,2)))/(self.stdDev*math.sqrt(2*math.pi)) + self.offset
+    
+    return likelihood
+
+def check_angle(wallCoord):
+    numerator = (math.cos(theta)*(wallCoord.ay - wallCoord.by) + math.sin(theta)*(wallCoord.bx - wallCoord.ax))
+    denominator = math.sqrt(pow((wallCoord.ay - wallCoord.by),2) + pow((wallCoord.bx - wallCoord.ax),2))
+    beta = math.acos(numerator/denominator)
+    
+    return beta < self.angleThreshold
+
+def noise_e():
+    return random.gauss(0, self.stdDev)
+
+def noise_f():
+    return random.gauss(0, self.stdDev)
+
+def noise_g():
+    return random.gauss(0, self.stdDev)
+
+def forward_renew_particle(D):
+    
+    e = noise_e()
+    # sonar_measure
+    z = get_distance_measurement()
+    
+    print "before" + particles.data
+    
+    for(particle in particles.data):
+        ''' rotate less 180 instead of 360
+        '''
+        new_theta = updates.theta + particle[2]
+        if(new_theta > math.pi):
+            new_theta = new_theta - math.pi
+        elif(new_theta < -math.pi):
+            new_theta = new_theta + math.pi
+            
+        new_x = particle[0]+(D+e)*math.cos(particle[2])
+        new_y = particle[1]+(D+e)*math.sin(particle[2])
+        new_theta = particle[2]+noise_f()
+        new_weight = calculate_likelihood(new_x, new_y, new_theta, z)
+        
+        particle = [(new_x, new_y, new_theta, new_weight)]
+    
+    print "after" + particles.data
+    particles.update(particles.data)
+
+    return particle
+
+def turn_renw_particle(particle):
+    particle[2] = particle[2]+alpha+noise_g()
+    if particle[2] > 360:
+        particle[2] -= 360
+    return particle
+
+def renew_particles(particles,operation):
+    if operation == "forward":
+        for i in range(len(particles)):
+            particles[i] = forward_renew_particle(particles[i])
+    elif operation == "turn":
+        for i in range(len(particles)):
+            particles[i] = turn_renw_particle(particles[i])
+    return particles
+    
+if __name__ == "__main__":
+    
+    particles = pds.Particles()
+    
+    t = 0
+    #while True:
+    #particles.update()
+    #particles.draw()
+    forward_renew_particle(10)
+    #t += 0.05
+    #time.sleep(0.05)
+    #check_angle()
+    
+    
+    #likelihood < self.likeliThreshold
+    

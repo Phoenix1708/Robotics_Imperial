@@ -1,0 +1,679 @@
+from BrickPi import *   #import BrickPi.py file to use BrickPi operations
+import particleDataStructures as pds
+from numpy import *
+import random
+import os
+from collections import Counter
+
+LEFT_MOTOR = PORT_C
+RIGHT_MOTOR = PORT_D
+SONAR_MOTOR = PORT_B
+
+LEFT_TOUCHSENSOR = PORT_4
+RIGHT_TOUCHSENSOR = PORT_1
+SONAR_SENSOR = PORT_2
+
+
+stdDev_e = 0.05
+stdDev_f = 0.01
+stdDev_g = 0.033
+stdDev = 0.01
+likeliOffset = 0.15
+likeliThreshold = 0.2
+angleThreshold = 0.558505361 # 32 degree
+numOfParticles = 100
+# threadshold for depth histgram
+histThreshold = 5000000
+angleChecks = 0 # counter for angle check reported from all particles
+hit = False
+
+##################################################################################
+''' This part is the motion of the robot'''
+##################################################################################
+def initialise():
+    BrickPiSetup()  # setup the serial port for communication
+    
+    BrickPi.MotorEnable[LEFT_MOTOR] = 1  #Enable the Motor A
+    BrickPi.MotorEnable[RIGHT_MOTOR] = 1 #Enable the Motor B
+    BrickPi.MotorEnable[SONAR_MOTOR] = 1 #Enable the Motor which control the rotation of sonar sensor
+    
+    BrickPi.SensorType[LEFT_TOUCHSENSOR] = TYPE_SENSOR_TOUCH   #Set the type of sensor
+    BrickPi.SensorType[RIGHT_TOUCHSENSOR] = TYPE_SENSOR_TOUCH   #Set the type of sensor
+    BrickPi.SensorType[SONAR_SENSOR] = TYPE_SENSOR_ULTRASONIC_CONT # Set up ultrsonic sensor
+    BrickPi.SensorType[PORT_1] = TYPE_SENSOR_COLOR_FULL
+    BrickPiSetupSensors()
+
+def forward(distance):
+    motorRotateDegree([153,150],[27.8*distance,27.8*distance],[LEFT_MOTOR,RIGHT_MOTOR])
+
+def turn(degrees):
+    motorRotateDegree([150,150],[-1.9*degrees,1.9*degrees],[LEFT_MOTOR,RIGHT_MOTOR])
+
+def rotateSonarSensor(degrees):
+    # BrickPi.MotorSpeed[SONAR_MOTOR] = 10
+    # 0.0174532925
+    motorRotateDegree([150],[degrees],[SONAR_MOTOR], SONAR_SENSOR_PORT)
+# motorRotateDegree([100],[0.0174532925],[SONAR_MOTOR])
+
+def bumper_left_hit():
+    return BrickPi.Sensor[LEFT_TOUCHSENSOR]
+
+def bumper_right_hit():
+    return BrickPi.Sensor[RIGHT_TOUCHSENSOR]
+
+def lightOn():
+    BrickPi.SensorType[PORT_1] = TYPE_SENSOR_LIGHT_ON
+    BrickPiSetupSensors()
+
+def lightOff():
+    BrickPi.SensorType[PORT_1] = TYPE_SENSOR_LIGHT_OFF
+    BrickPiSetupSensors()
+
+def get_distance_measurement():
+    result = BrickPiUpdateValues()  # Ask BrickPi to update values for sensors/$
+    value = 0
+    if not result :
+        value = BrickPi.Sensor[SONAR_SENSOR]     #BrickPi.Sensor[PORT] stores the value
+    time.sleep(.01)     # sleep for 10 ms
+    return value
+
+
+##################################################################################
+''' Location Signature classes'''
+##################################################################################
+
+# Location signature class: stores a signature characterizing one location
+class LocationSignature:
+    def __init__(self, no_bins = 80):
+        self.sig = [] # [0] * no_bins
+    
+    def print_signature(self):
+        for i in range(len(self.sig)):
+            print self.sig[i]
+
+# --------------------- File management class ---------------
+class SignatureContainer():
+    def __init__(self, size = 5):
+        self.size      = size; # max number of signatures that can be stored
+        self.filenames = [];
+        
+        # Fills the filenames variable with names like loc_%%.dat
+        # where %% are 2 digits (00, 01, 02...) indicating the location number.
+        for i in range(self.size):
+            self.filenames.append('loc_{0:02d}.dat'.format(i))
+    
+    # Get the index of a filename for the new signature. If all filenames are
+    # used, it returns -1;
+    def get_free_index(self):
+        n = 0
+        while n < self.size:
+            if (os.path.isfile(self.filenames[n]) == False):
+                break
+            n += 1
+        
+        if (n >= self.size):
+            return -1;
+        else:
+            return n;
+    
+    # Delete all loc_%%.dat files
+    def delete_loc_files(self):
+        print "STATUS:  All signature files removed."
+        for n in range(self.size):
+            if os.path.isfile(self.filenames[n]):
+                os.remove(self.filenames[n])
+    
+    # Writes the signature to the file identified by index (e.g, if index is 1
+    # it will be file loc_01.dat). If file already exists, it will be replaced.
+    def save(self, signature, index):
+        filename = self.filenames[index]
+        if os.path.isfile(filename):
+            os.remove(filename)
+        
+        f = open(filename, 'w')
+        
+        for i in range(len(signature.sig)):
+            s = str(signature.sig[i]) + "\n"
+            f.write(s)
+        f.close();
+    
+    # Read signature file identified by index. If the file doesn't exist
+    # it returns an empty signature.
+    def read(self, index):
+        ls = LocationSignature()
+        filename = self.filenames[index]
+        if os.path.isfile(filename):
+            #f = open(filename, 'r')
+            with open(filename) as fp:
+                for line in fp:
+                    if (line != ''):
+                        ls.sig.append(int(float(line.replace("\n", ""))))
+            '''for i in range(ls.bins):
+                s = f.readline()
+                if (s != ''):
+                ls.sig.append(int(float(s.replace("\n", ""))))'''
+            #ls.sig[i] = int(s)
+            #f.close();
+            fp.close();
+        else:
+            print "WARNING: Signature does not exist."
+        return ls
+
+##################################################################################
+''' Location Signature application and calculate the path'''
+##################################################################################
+
+def shapeList(alist,size):
+    list_size = len(alist)
+    scale = float(list_size)/float(size)
+    new_list = alist*3
+    result = []
+    for i in range(size):
+        low_bound = int(round(scale*(i-1.5)+list_size))
+        up_bound = int(round(scale*(i+1.5)+ list_size))
+        value = median(new_list[low_bound:up_bound])
+        result.append(value)
+    return result
+
+# FILL IN: spin robot or sonar to capture a signature and store it in ls
+def characterize_location(ls, learning):
+    # print "TODO:    You should implement the function that captures a signature."
+    
+    if learning:
+        print "rotate to starting location"
+        motorRotateDegree([200],[6.8*180],[SONAR_MOTOR],[SONAR_SENSOR],ls,False)
+        print "reading..."
+        ls = motorRotateDegree([90],[(7.1*180)*2.0*(-1)],[SONAR_MOTOR],[SONAR_SENSOR],ls,True)
+        ls.sig = shapeList(ls.sig,360)
+        print "rotate back"
+        motorRotateDegree([200],[7.2*180],[SONAR_MOTOR],[SONAR_SENSOR],ls,False)
+    else:
+        print "rotate to starting location"
+        motorRotateDegree([200],[6.8*180],[SONAR_MOTOR],[SONAR_SENSOR],ls,False)
+        print "reading..."
+        ls = motorRotateDegree([90],[(7.1*180)*2.0*(-1)],[SONAR_MOTOR],[SONAR_SENSOR],ls,True)
+        ls.sig = shapeList(ls.sig,360)
+        print "rotate back"
+        motorRotateDegree([200],[7.15*180],[SONAR_MOTOR],[SONAR_SENSOR],ls,False)
+
+# FILL IN: compare two signatures
+def compare_signatures(ls_obs, ls_read):
+    dist = 0
+    #"TODO:    You should implement the function that compares two signatures."
+    freq_read = cal_freq2(ls_read.sig)
+    freq_obs = cal_freq2(ls_obs.sig)
+    freq_dif = sum(list(abs(array(freq_read)-array(freq_obs))))
+    return freq_dif
+
+def cal_freq1(alist):
+    freq = [0]*255
+    counter_list = Counter(alist).items()
+    for i in range(len(counter_list)):
+        freq[counter_list[i][0]] = counter_list[i][1]
+    return freq
+
+
+def cal_freq2(alist):
+    freq = [0]*26
+    for i in range(len(alist)):
+        freq[int(alist[i]/10)] += 1
+    return freq
+# This function characterizes the current location, and stores the obtained
+# signature into the next available file.
+def learn_location():
+    ls = LocationSignature()
+    characterize_location(ls, True)
+    idx = signatures.get_free_index();
+    if (idx == -1): # run out of signature files
+        print "\nWARNING:"
+        print "No signature file is available. NOTHING NEW will be learned and stored."
+        print "Please remove some loc_%%.dat files.\n"
+        return
+    
+    signatures.save(ls,idx)
+    print "STATUS:  Location " + str(idx) + " learned and saved."
+# compare two signature and comput the angle
+def cal_angle(ls_obs, ls_read):
+    reads = ls_read.sig * 2
+    obs = ls_obs.sig
+    min_distance = float('inf')
+    min_index = 0
+    obs = obs[0:100]
+    len_obs = len(obs)
+    for i in range(len(reads)/2):
+        distance = 0
+        distance = sum(pow(array(reads[i:i+len_obs])-array(obs),2))
+        if distance < min_distance:
+            min_distance = distance
+            min_index = i
+    if min_index > len(ls_read.sig):
+        min_index = min_index - len(ls_read.sig)
+    
+    #print "min_distance: "+ str(min_distance)
+    #print "min_index: " + str(min_index)
+    scale = 360.0/float(len(ls_read.sig))
+    angle = -scale*(min_index+0.5)
+    if angle < -180:
+        angle = angle + 360
+    return [min_distance,angle]
+
+# This function tries to recognize the current location.
+# 1.   Characterize current location
+# 2.   For every learned locations
+# 2.1. Read signature of learned location from file
+# 2.2. Compare signature to signature coming from actual characterization
+# 3.   Retain the learned location whose minimum distance with
+#      actual characterization is the smallest.
+# 4.   Display the index of the recognized location on the screen
+def recognize_location():
+    ls_obs = LocationSignature();
+    characterize_location(ls_obs, False);
+    
+    best_idx = -1
+    currentMax = histThreshold
+    
+    # FILL IN: COMPARE ls_read with ls_obs and find the best match
+    for idx in range(signatures.size):
+        print "STATUS:  Comparing signature " + str(idx) + " with the observed signature."
+        ls_read = signatures.read(idx);
+        result    = compare_signatures(ls_obs, ls_read)
+        
+        print "checking location: " + str(idx)
+        
+        if result < currentMax:
+            currentMax = result
+            best_idx = idx
+    
+    print "At location: " + str(best_idx)
+    if best_idx != -1:
+        ls_read = signatures.read(best_idx)
+        [min_distance, angle] = cal_angle(ls_obs,ls_read) # need to initial a minimum distance Threshold to decide whether this is the location
+        return [best_idx,angle]
+    else:
+        print "Not in any location"
+
+def cal_best_path(goals,path_idx,locIdx):
+    idx = path_idx.index(locIdx)
+    best_path = []
+    best_path.extend(path_idx[idx:])
+    best_path.extend(path_idx[0:idx])
+    best_path.append(locIdx)
+    path = []
+    for i in range(len(best_path)):
+        path.append(goals[best_path[i]])
+    return path[1:]
+
+
+##################################################################################
+''' This part is the estimations of the robot'''
+##################################################################################
+
+
+def noise_e():
+    return random.gauss(0, stdDev_e)
+
+def noise_f():
+    return random.gauss(0, stdDev_f)
+
+def noise_g():
+    return random.gauss(0, stdDev_g)
+
+def calculate_depth(wallCoord, location, theta):
+    """calculated excepted depth for a
+        given particle(pds.data) and give wall
+        """
+    numerator = (wallCoord.by - wallCoord.ay)*(wallCoord.ax - location.x) - (wallCoord.bx - wallCoord.ax)*(wallCoord.ay - location.y)
+    denominator = (wallCoord.by - wallCoord.ay)*math.cos(theta) - (wallCoord.bx - wallCoord.ax)*math.sin(theta)
+    depth = numerator/denominator
+    
+    return depth
+
+def check_angle(wallCoord, theta):
+    """check whether the current angle to the wall in the front
+        """
+    numerator = (math.cos(theta)*(wallCoord.ay - wallCoord.by) + math.sin(theta)*(wallCoord.bx - wallCoord.ax))
+    denominator = math.sqrt(pow((wallCoord.ay - wallCoord.by),2) + pow((wallCoord.bx - wallCoord.ax),2))
+    beta = math.acos(numerator/denominator)
+    
+    # return whether angle is too big
+    return beta > angleThreshold
+
+class Coordinate:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+def calculate_likelihood(px, py, theta, z):
+    """calculated likelihood for one particle and the
+        expected depth to the closeted wall in the front
+        """
+    wallIndex = 0;        # index of the wall that the "depth" is the shortest
+    
+    currentShortestDepth = 0.0
+    for wall in pds.mymap.walls:
+        
+        wallCoord = Coordinate(ax = wall[0], ay = wall[1], bx = wall[2], by = wall[3])
+        loc = Coordinate(x = px, y = px)
+        
+        depth = calculate_depth(wallCoord, loc, theta)
+        
+        # hits point
+        hitPoint = Coordinate(x = px + depth*math.cos(theta), y = py + depth*math.sin(theta))
+        
+        # check hitpoint is in the range of the wall
+        inrange = hitPoint.x < max(wallCoord.ax, wallCoord.bx) and\
+            hitPoint.x > min(wallCoord.ax, wallCoord.bx) and\
+            hitPoint.y < max(wallCoord.ay, wallCoord.by) and\
+            hitPoint.y > min(wallCoord.ay, wallCoord.by)
+        
+        if(inrange and depth < currentShortestDepth):
+            currentShortestDepth = depth
+            wallIndex = pds.mymap.walls.index(wall)
+    
+    # calculate likelihood
+    likelihood = math.exp(-(pow((currentShortestDepth - z),2))/(2*pow(stdDev,2)))/(stdDev*math.sqrt(2*math.pi))
+    if likelihood < likeliOffset:
+        likelihood = likeliOffset
+    # check angle
+    global angleChecks
+    front_wall = pds.mymap.walls[wallIndex]
+    frontWallCoord = Coordinate(ax = front_wall[0], ay = front_wall[1], bx = front_wall[2], by = front_wall[3])
+    if check_angle(frontWallCoord, theta):
+        angleChecks = angleChecks + 1
+    
+    return likelihood
+
+
+def update_theta(update, old_theta):
+    ''' update the angle theta taking care of
+        angular wrap-around
+        '''
+    new_theta = update + old_theta
+    if(new_theta > 2*math.pi):
+        new_theta = new_theta - 2*math.pi
+    '''elif(new_theta < -math.pi):
+        new_theta = new_theta + math.pi'''
+    
+    return new_theta
+
+
+##################################################################################
+''' This part is the main part updating the of estimation'''
+##################################################################################
+def forward_renew_particle(D, particle):
+    '''straight line movement particle update
+        '''
+    # sonar_measure
+    z = get_distance_measurement()
+    #z = 100
+    
+    e = noise_e()
+    
+    # new_x
+    particle[0] = particle[0]+(D+e)*math.cos(particle[2])
+    # new_y
+    particle[1] = particle[1]+(D+e)*math.sin(particle[2])
+    # new_theta
+    particle[2] = update_theta(noise_f(), particle[2])
+    
+    if z <= 200:
+        likelihood = calculate_likelihood(particle[0], particle[1], particle[2], z)
+        #print "likelihood " + str(likelihood)
+        
+        # new_weight
+        particle[3] = likelihood*particle[3]
+    
+    #print "particle " + str(particle)
+    
+    return particle
+
+def turn_renew_particle(alpha, particle):
+    '''pure rotation particle update
+        '''
+    z = get_distance_measurement()
+    
+    # new_theta
+    particle[2] = update_theta(alpha + noise_g(), particle[2])
+    
+    #if z <= 200:
+    likelihood = calculate_likelihood(particle[0], particle[1], particle[2], z)
+        #print "likelihood " + str(likelihood)
+        
+        # new_weight
+    particle[3] = likelihood*particle[3]
+    
+    #print "particle " + str(particle)
+    
+    return particle
+
+def renew_particles(motion, operation):
+    '''update particle depends on motion type
+        '''
+    global angleChecks
+    #print "before particles " + str(particles.data)
+    skip = False
+    
+    if operation == "forward":
+        temp = [forward_renew_particle(motion.forwardDis, list(particle)) for particle in particles.data]
+        # If the number of angle checks reported is too big
+        '''if angleChecks > particles.n*0.6:
+            skip = True'''
+    
+    elif operation == "turn":
+        temp = [turn_renew_particle(motion.rotateAngle, list(particle)) for particle in particles.data]
+        '''if angleChecks > particles.n*0.6:
+            skip = True'''
+    
+    # print "angleChecks " + str(angleChecks)
+    # angleChecks = 0
+    
+    #print "temp " + str(temp)
+    
+    if skip:
+        particles.data = [(temp[i][0],temp[i][1],temp[i][2],particles.data[i][3]) for i in range(len(temp))]
+    if not skip:
+        particles.data = temp
+        normalise_weight(particles)
+        resampling_particles(particles)
+    
+    #print "after particles " + str(particles.data)
+    particles.update(particles.data)
+    
+    return particles
+
+def update_weight(particle,sum):
+    particle[3] = particle[3]/sum
+    return tuple(particle)
+
+def normalise_weight(particles):
+    '''normalise weight of all particles'''
+    sum = 0
+    for particle in particles.data:
+        sum += particle[3]
+    
+    particles.data = [update_weight(list(particle),sum) for particle in particles.data]
+
+def update_particle(particle,new_particle,n):
+    particle[0] = new_particle[0]
+    particle[1] = new_particle[1]
+    particle[2] = new_particle[2]
+    particle[3] = 1.0/float(n)
+    return tuple(particle)
+
+def resampling_particles(particles):
+    ''' resampling all particles'''
+    array = [0]*particles.n
+    array[0] = particles.data[0][3]
+    for i in range(1,particles.n):
+        array[i] = array[i - 1]+particles.data[i][3]
+    
+    # sample 100 new particles
+    counter = 0
+    new_particles = [None]*particles.n
+    while counter < particles.n:
+        random_number = random.random()
+        for i in range(len(array)):
+            if random_number< array[i]:
+                idx = i
+                break
+        new_particles[counter] = list(particles.data[idx])
+        counter = counter + 1
+    particles.data = [update_particle(list(particles.data[i]),new_particles[i],particles.n) for i in range(particles.n)]
+
+def estCurrentlocation():
+    current_x = 0
+    current_y = 0
+    current_theta = 0
+    for i in range(particles.n):
+        current_x = current_x + particles.data[i][0]*particles.data[i][3]
+        current_y = current_y + particles.data[i][1]*particles.data[i][3]
+        current_theta = current_theta + particles.data[i][2]*particles.data[i][3]
+    print "Current position " + str([current_x,current_y,current_theta*180/math.pi])
+    
+    return [current_x, current_y, current_theta]
+
+def calibration(x,y):
+    '''function to return the degree to rotate
+        and distance to move in order to get to
+        given waypoint
+        '''
+    
+    [current_x, current_y, current_theta] = estCurrentlocation()
+    
+    print "Navigate to " + str([x,y])
+    
+    distance = pow(pow(x-current_x,2)+pow(y-current_y,2),0.5)
+    
+    dif_y = float(round(y,3)-round(current_y,3))
+    dif_x = float(round(x,3)-round(current_x,3))
+    
+    if dif_x == 0:
+        if y > current_y:
+            degree = math.pi/2 - current_theta
+        elif y < current_y:
+            degree = -math.pi/2 - current_theta
+    else:
+        degree = math.atan(dif_y/dif_x)
+        if dif_y >= 0 and dif_x >0:
+            degree = degree - current_theta
+        elif dif_y >= 0 and dif_x< 0:
+            degree = degree - current_theta + math.pi
+        elif dif_y <=0  and dif_x > 0:
+            degree = degree - current_theta
+        elif dif_y <= 0 and dif_x < 0:
+            degree = degree - current_theta - math.pi
+        if degree > math.pi:
+            degree -= math.pi*2
+        elif degree < -math.pi:
+            degree += math.pi*2
+    
+    return [degree, distance]
+
+def navigateToWaypoint(x, y):
+    '''navigate to waypoint from current location
+        based on necessary rotating degree and distance to
+        move forward, which are generated by calibration
+        '''
+    
+    #[degree, distance] = calibration(x, y)
+    
+    # turn to the right direction
+    # when beginning navigating to a new waypoint
+    #print "turn " + str(degree/math.pi*180)
+    #turn(degree/math.pi*180)
+    #particles.draw()
+    # calibrate to see if it needs to further rotate
+    #motion = Coordinate(rotateAngle = degree)
+    #renew_particles(motion, "turn")
+    #[degree, distance] = calibration(x, y)
+    
+    global hit
+    while distance > 2:
+        
+        if (bumper_left_hit() or bumper_right_hit()):
+            hit = True
+            break
+        
+        print "distance " + str(distance)
+        # while the degree it think it needs to rotate not
+        # too far away from 0 i.e not trivial
+        while abs(degree) > 0.05:
+            print "turn " + str(degree/math.pi*180)
+            # turn
+            turn(degree/math.pi*180)
+            #particles.draw()
+            # calibrate to see if it needs to further rotate
+            print "dddddddddddddddddddddddddddddddddd"
+            motion = Coordinate(rotateAngle = degree)
+            print "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            renew_particles(motion, "turn")
+            print "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            [degree, distance] = calibration(x, y)
+            print "ccccccccccccccccccccccccccccccccccc"
+            time.sleep(0.05)
+            print "forward_turn " + str(distance)
+            
+        print "forward " + str(distance)
+        
+        if distance > 40:
+            forward(40)
+            #particles.draw()
+            motion = Coordinate(forwardDis = 40)
+        else:
+            forward(distance)
+            #particles.draw()
+            motion = Coordinate(forwardDis = distance)
+        
+        renew_particles(motion, "forward")
+        [degree, distance] = calibration(x, y)
+        time.sleep(0.05)
+        print "\n"
+
+
+if __name__ == "__main__":
+    
+    initialise()
+    signatures = SignatureContainer(5);
+    # signatures.delete_loc_files()
+    #print "learning..."
+    # learn_location();
+    
+    goals = [(126,168),(180,30),(126,54),(84,30),(30,54)]
+    # path = [1 2 5 4 7]
+    path_idx = [3,1,2,0,2,4]
+
+    
+    '''# 1. recognize current location and current angle'''
+    print "recognizing..."
+    #[locIdx,angle] = recognize_location()
+    locIdx = 0
+    angle = 90
+    angle = float(angle)/180.0*math.pi
+    current_x = goals[locIdx][0]
+    current_y = goals[locIdx][1]
+    current_theta = angle
+    print "at location" + str([current_x,current_y,current_theta])
+    particles = pds.Particles(current_x,current_y,current_theta)
+    #locIdx = 0
+    #angle = 0
+    ''' # 2. according to 5 destination and current status calculate the best move'''
+    ''' Calculate the path'''
+    best_path = cal_best_path(goals,path_idx,locIdx)
+    print best_path
+    #current location and direction
+
+    #particles.draw()
+    ''' # 3. start to move and update current location and current direction using MCL'''
+    path_pointer = 0
+    while path_pointer < len(best_path):
+        goal_x = best_path[path_pointer][0]
+        goal_y = best_path[path_pointer][1]
+        print "destination " + str((goal_x,goal_y))
+        navigateToWaypoint(goal_x,goal_y) #TODO finish navigate to function
+        print "arrived"
+        #lightOn()
+        #time.sleep(1)
+        #lightOff()
+        '''# 4. if acheive one destination then shine the light'''
+        path_pointer += 1
+
+

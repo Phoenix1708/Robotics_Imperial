@@ -1,0 +1,415 @@
+import particleDataStructures as pds
+from BrickPi import *   #import BrickPi.py file to use BrickPi operations
+from numpy import *
+import random
+    
+LEFT_MOTOR = PORT_A
+RIGHT_MOTOR = PORT_B
+SONAR_MOTOR = PORT_D
+
+LEFT_TOUCHSENSOR = PORT_3
+RIGHT_TOUCHSENSOR = PORT_1
+SONAR_SENSOR = PORT_2
+
+stdDev_e = 0.05 
+stdDev_f = 0.01 
+stdDev_g = 0.033
+stdDev = 0.01
+likeliOffset = 0.15
+likeliThreshold = 0.2
+angleThreshold = 0.558505361 # 32 degree
+numOfParticles = 100
+
+angleChecks = 0 # counter for angle check reported from all particles
+hit = False
+
+##################################################################################
+''' This part is the motion of the robot'''
+##################################################################################
+def initialise():
+    BrickPiSetup()  # setup the serial port for communication
+
+    BrickPi.MotorEnable[LEFT_MOTOR] = 1 #Enable the Motor A
+    BrickPi.MotorEnable[RIGHT_MOTOR] = 1 #Enable the Motor B
+
+    BrickPi.SensorType[LEFT_TOUCHSENSOR] = TYPE_SENSOR_TOUCH   #Set the type of sensor
+    BrickPi.SensorType[RIGHT_TOUCHSENSOR] = TYPE_SENSOR_TOUCH   #Set the type of sensor
+    BrickPi.SensorType[SONAR_SENSOR] = TYPE_SENSOR_ULTRASONIC_CONT # Set up ultrsonic sensor
+    
+    BrickPiSetupSensors()
+
+def forward(distance):
+    motorRotateDegree([100,115],[18.75*distance,18.25*distance],[LEFT_MOTOR,RIGHT_MOTOR])
+
+def turn(degrees):
+    motorRotateDegree([100,90],[-1*degrees,1*degrees],[LEFT_MOTOR,RIGHT_MOTOR])
+    
+def rotateSonarSensor(degrees):
+    # BrickPi.MotorSpeed[SONAR_MOTOR] = 10
+    # 0.0174532925
+    motorRotateDegree([100],[1*degrees],[SONAR_MOTOR])
+    
+def bumper_left_hit():
+    """get left bumper sensor data
+    """
+    return BrickPi.Sensor[LEFT_TOUCHSENSOR]
+
+def bumper_right_hit():
+    """get right bumper sensor data
+    """
+    return BrickPi.Sensor[RIGHT_TOUCHSENSOR]
+
+def get_distance_measurement():
+    """get sonar sensor data
+    """
+    BrickPiUpdateValues()
+    return BrickPi.Sensor[SONAR_SENSOR] - 3
+
+
+##################################################################################
+''' This part is the estimations of the robot'''
+##################################################################################
+
+
+def noise_e():
+    return random.gauss(0, stdDev_e)
+
+def noise_f():
+    return random.gauss(0, stdDev_f)
+
+def noise_g():
+    return random.gauss(0, stdDev_g)
+
+def calculate_depth(wallCoord, location, theta):
+    """calculated excepted depth for a 
+       given particle(pds.data) and give wall
+    """
+    numerator = (wallCoord.by - wallCoord.ay)*(wallCoord.ax - location.x) - (wallCoord.bx - wallCoord.ax)*(wallCoord.ay - location.y)
+    denominator = (wallCoord.by - wallCoord.ay)*math.cos(theta) - (wallCoord.bx - wallCoord.ax)*math.sin(theta)
+    depth = numerator/denominator
+    
+    return depth
+
+def check_angle(wallCoord, theta):
+    """check whether the current angle to the wall in the front
+    """
+    numerator = (math.cos(theta)*(wallCoord.ay - wallCoord.by) + math.sin(theta)*(wallCoord.bx - wallCoord.ax))
+    denominator = math.sqrt(pow((wallCoord.ay - wallCoord.by),2) + pow((wallCoord.bx - wallCoord.ax),2))
+    beta = math.acos(numerator/denominator)
+    
+    # return whether angle is too big
+    return beta > angleThreshold
+
+class Coordinate:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+def calculate_likelihood(px, py, theta, z):
+    """calculated likelihood for one particle and the 
+       expected depth to the closeted wall in the front
+    """
+    wallIndex = 0;        # index of the wall that the "depth" is the shortest
+    
+    currentShortestDepth = 0.0
+    for wall in pds.mymap.walls:
+        
+        wallCoord = Coordinate(ax = wall[0], ay = wall[1], bx = wall[2], by = wall[3])
+        loc = Coordinate(x = px, y = px)
+        
+        depth = calculate_depth(wallCoord, loc, theta)
+        
+        # hits point
+        hitPoint = Coordinate(x = px + depth*math.cos(theta), y = py + depth*math.sin(theta))
+        
+        # check hitpoint is in the range of the wall
+        inrange = hitPoint.x < max(wallCoord.ax, wallCoord.bx) and\
+                  hitPoint.x > min(wallCoord.ax, wallCoord.bx) and\
+                  hitPoint.y < max(wallCoord.ay, wallCoord.by) and\
+                  hitPoint.y > min(wallCoord.ay, wallCoord.by)
+        
+        if(inrange and depth < currentShortestDepth):
+            currentShortestDepth = depth
+            wallIndex = pds.mymap.walls.index(wall)
+            
+    # calculate likelihood
+    likelihood = math.exp(-(pow((currentShortestDepth - z),2))/(2*pow(stdDev,2)))/(stdDev*math.sqrt(2*math.pi))
+    if likelihood < likeliOffset:
+        likelihood = likeliOffset    
+    # check angle
+    global angleChecks
+    front_wall = pds.mymap.walls[wallIndex]
+    frontWallCoord = Coordinate(ax = front_wall[0], ay = front_wall[1], bx = front_wall[2], by = front_wall[3])
+    if check_angle(frontWallCoord, theta):
+        angleChecks = angleChecks + 1
+    
+    return likelihood
+
+
+def update_theta(update, old_theta):
+    ''' update the angle theta taking care of
+        angular wrap-around
+    '''
+    new_theta = update + old_theta
+    if(new_theta > 2*math.pi):
+        new_theta = new_theta - 2*math.pi
+    '''elif(new_theta < -math.pi):
+        new_theta = new_theta + math.pi'''
+        
+    return new_theta
+
+
+##################################################################################
+''' This part is the main part updating the of estimation'''
+##################################################################################
+def forward_renew_particle(D, particle):
+    '''straight line movement particle update
+    '''
+    # sonar_measure
+    z = get_distance_measurement()
+    #z = 100
+        
+    e = noise_e()
+
+    # new_x
+    particle[0] = particle[0]+(D+e)*math.cos(particle[2])
+    # new_y
+    particle[1] = particle[1]+(D+e)*math.sin(particle[2])
+    # new_theta
+    particle[2] = update_theta(noise_f(), particle[2])
+
+    if z <= 200:
+        likelihood = calculate_likelihood(particle[0], particle[1], particle[2], z)
+        #print "likelihood " + str(likelihood)
+        
+        # new_weight
+        particle[3] = likelihood*particle[3]
+    
+    #print "particle " + str(particle)
+    
+    return particle
+
+def turn_renew_particle(alpha, particle):
+    '''pure rotation particle update
+    '''
+    z = get_distance_measurement()
+    
+    # new_theta
+    particle[2] = update_theta(alpha + noise_g(), particle[2])
+    
+    if z <= 200:
+        likelihood = calculate_likelihood(particle[0], particle[1], particle[2], z)
+        #print "likelihood " + str(likelihood)
+        
+        # new_weight
+        particle[3] = likelihood*particle[3]
+    
+    #print "particle " + str(particle)
+    
+    return particle
+
+def renew_particles(motion, operation):
+    '''update particle depends on motion type
+    '''
+    global angleChecks
+    #print "before particles " + str(particles.data)
+    skip = False
+    
+    if operation == "forward":
+        temp = [forward_renew_particle(motion.forwardDis, list(particle)) for particle in particles.data]
+        # If the number of angle checks reported is too big
+        '''if angleChecks > particles.n*0.6:
+            skip = True'''            
+
+    elif operation == "turn":
+        temp = [turn_renew_particle(motion.rotateAngle, list(particle)) for particle in particles.data]
+        '''if angleChecks > particles.n*0.6:
+            skip = True'''
+
+    # print "angleChecks " + str(angleChecks)
+    # angleChecks = 0
+    
+    #print "temp " + str(temp)
+    
+    if skip:
+        particles.data = [(temp[i][0],temp[i][1],temp[i][2],particles.data[i][3]) for i in range(len(temp))]
+    if not skip:
+        particles.data = temp
+        normalise_weight(particles)
+        resampling_particles(particles)
+    
+    #print "after particles " + str(particles.data)
+    particles.update(particles.data)
+        
+    return particles
+
+def update_weight(particle,sum):
+    particle[3] = particle[3]/sum
+    return tuple(particle)
+
+def normalise_weight(particles):
+    '''normalise weight of all particles'''
+    sum = 0
+    for particle in particles.data:
+        sum += particle[3]
+        
+    particles.data = [update_weight(list(particle),sum) for particle in particles.data]
+
+def update_particle(particle,new_particle,n):
+    particle[0] = new_particle[0]
+    particle[1] = new_particle[1]
+    particle[2] = new_particle[2]
+    particle[3] = 1.0/float(n)
+    return tuple(particle)
+
+def resampling_particles(particles):
+    ''' resampling all particles'''
+    array = [0]*particles.n
+    array[0] = particles.data[0][3]
+    for i in range(1,particles.n):
+        array[i] = array[i - 1]+particles.data[i][3]
+
+    # sample 100 new particles
+    counter = 0
+    new_particles = [None]*particles.n
+    while counter < particles.n:
+        random_number = random.random()
+        for i in range(len(array)):
+            if random_number< array[i]:
+                idx = i
+                break
+        new_particles[counter] = list(particles.data[idx])
+        counter = counter + 1
+    particles.data = [update_particle(list(particles.data[i]),new_particles[i],particles.n) for i in range(particles.n)]
+
+def estCurrentlocation():
+    current_x = 0
+    current_y = 0
+    current_theta = 0
+    for i in range(particles.n):
+        current_x = current_x + particles.data[i][0]*particles.data[i][3]
+        current_y = current_y + particles.data[i][1]*particles.data[i][3]
+        current_theta = current_theta + particles.data[i][2]*particles.data[i][3]
+    print "Current position " + str([current_x,current_y,current_theta*180/math.pi])
+    
+    return [current_x, current_y, current_theta]
+    
+def calibration(x,y):
+    '''function to return the degree to rotate
+       and distance to move in order to get to
+       given waypoint
+    '''
+    
+    [current_x, current_y, current_theta] = estCurrentlocation()
+    
+    print "Navigate to " + str([x,y])
+    
+    distance = pow(pow(x-current_x,2)+pow(y-current_y,2),0.5)
+
+    dif_y = float(round(y,3)-round(current_y,3))
+    dif_x = float(round(x,3)-round(current_x,3))
+    
+    if dif_x == 0:
+        if y > current_y:
+            degree = math.pi/2 - current_theta
+        elif y < current_y:
+            degree = -math.pi/2 - current_theta
+    else:
+        degree = math.atan(dif_y/dif_x)
+        if dif_y >= 0 and dif_x >0:
+            degree = degree - current_theta
+        elif dif_y >= 0 and dif_x< 0:
+            degree = degree - current_theta + math.pi
+        elif dif_y <=0  and dif_x > 0:
+            degree = degree - current_theta
+        elif dif_y <= 0 and dif_x < 0:
+            degree = degree - current_theta - math.pi
+        if degree > math.pi:
+            degree -= math.pi*2
+        elif degree < -math.pi:
+            degree += math.pi*2
+            
+    return [degree, distance]
+    
+def navigateToWaypoint(x, y):
+    '''navigate to waypoint from current location
+       based on necessary rotating degree and distance to
+       move forward, which are generated by calibration
+    '''
+    
+    [degree, distance] = calibration(x, y)
+    
+    # turn to the right direction
+    # when beginning navigating to a new waypoint
+    print "turn " + str(degree/math.pi*180)
+    turn(degree/math.pi*180)
+    particles.draw()
+    # calibrate to see if it needs to further rotate
+    motion = Coordinate(rotateAngle = degree)
+    renew_particles(motion, "turn")
+    [degree, distance] = calibration(x, y)
+    
+    global hit
+    while distance > 2:
+        
+        if (bumper_left_hit() or bumper_right_hit()):
+                hit = True
+                break
+        
+        print "distance " + str(distance)
+        # while the degree it think it needs to rotate not
+        # too far away from 0 i.e not trivial
+        while abs(degree) > 0.05:
+            print "turn " + str(degree/math.pi*180)
+            # turn
+            turn(degree/math.pi*180)
+            particles.draw()            
+            # calibrate to see if it needs to further rotate
+            motion = Coordinate(rotateAngle = degree)
+            renew_particles(motion, "turn")
+            [degree, distance] = calibration(x, y)
+            time.sleep(0.5)
+            
+        print "forward " + str(distance)
+
+        if distance > 20:
+            forward(20)
+            particles.draw()
+            motion = Coordinate(forwardDis = 20)
+        else:
+            forward(distance)
+            particles.draw()
+            motion = Coordinate(forwardDis = distance)
+
+        renew_particles(motion, "forward")    
+        [degree, distance] = calibration(x, y)
+        time.sleep(0.5)
+        print "\n"    
+    
+    
+if __name__ == "__main__":
+    
+    initialise()
+    # open("data.txt", "w")
+    f = open("Exercise6/data.txt", 'a')
+    
+    degree = 360
+    while degree > 0:
+        
+        measurements = []
+        # make measurement 10 times and take the mean
+        count = 10
+        while count > 0:
+            measurements.append(get_distance_measurement())
+            count -= 1
+        dis = mean(measurements)
+        
+        # write to file
+        f.write('%s\n' % (dis))
+        
+        rotateSonarSensor(1.0)
+        #turn(0.03141926)
+        degree -= 1
+
+    f.write('%s\n' % (" "))
+    f.close()
+

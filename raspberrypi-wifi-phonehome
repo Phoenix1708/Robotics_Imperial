@@ -1,0 +1,129 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+use Data::Dumper;
+use IO::Socket;
+
+use csglib::Log qw(:all);
+
+my $logfile = "/tmp/phonehome.log";
+my $domain  = "doc.ic.ac.uk";
+
+my $log = new csglib::Log( scriptname=>"phonehome",
+			   file=>$logfile,
+			   level=>LOG_INFO ) ||
+	  die "phonehome: can't create $logfile\n";
+
+my $host = shift @ARGV || "146.169.6.27";	# thud..
+my $port = shift @ARGV || 55001;
+
+
+#
+# my( $ipaddr, $macaddr ) = parse_ifconfig( $nicname );
+#	take a nicname (eg eth0), run ifconfig on the NIC,
+#	and extract the IP (v4) address and the MAC address.
+#	return them both.  return () if no IP address and
+#       mac address can be determined.
+#
+# format is:
+# eth0     Link encap:Ethernet  HWaddr 6c:3b:e5:12:47:05  
+#          inet addr:146.169.12.8  Bcast:146.169.12.255  Mask:255.255.255.0
+#          ...
+sub parse_ifconfig ($)
+{
+	my( $nicname ) = @_;
+
+	my $input = `/sbin/ifconfig $nicname`;
+
+	unless( $input =~ /HWaddr\s+(\S+)/m )
+	{
+		$log->warn( "input doesn't match HWaddr!" );
+		return ();
+	}
+	my $macaddr = $1;
+
+	unless( $input =~ /inet\s+addr:\s*(\S+)/m )
+	{
+		$log->warn( "input doesn't match inet addr!" );
+		return ();
+	}
+	my $ipaddr = $1;
+
+	return ($ipaddr, $macaddr );
+}
+
+
+#
+#  my $socket = connect_friend();
+#	connect to our friendly server (trying several times if
+#	necessary), return the socket we receive.  In case of
+#	repeated failure, return undef.
+#
+sub connect_friend()
+{
+	$log->info( "trying to connect to $host:$port" );
+	foreach (1..5) {
+	    my $socket = new IO::Socket::INET('PeerAddr' => $host,
+				 'PeerPort' => $port,
+				 'Proto'    => 'tcp');
+	    return $socket if $socket;
+	    $log->info( "trying again..." );
+	    sleep 1;
+	}
+	return undef;
+}
+
+
+# stage 1: extract IP and MAC address from wlan0
+my( $ipaddr, $macaddr ) = parse_ifconfig( "wlan0" );
+unless( defined $macaddr )
+{
+	$log->info( "trying to down and up wlan0" );
+	system( "/sbin/ifdown", "wlan0" );
+	system( "/sbin/ifup", "wlan0" );
+	$log->info( "sleeping for 10s" );
+	sleep 10;
+	# try again
+	$log->info( "trying to parse ifconfig again" );
+	( $ipaddr, $macaddr ) = parse_ifconfig( "wlan0" );
+	$log->info( "macaddr=$macaddr, ipaddr=$ipaddr" ) if defined $macaddr;
+}
+
+#$log->info( "macaddr=$macaddr, ipaddr=$ipaddr" );
+
+unless( defined $macaddr )
+{
+	$log->fatal( "not on wifi, giving up" );
+}
+
+
+# stage 2: IF IT'S CHANGED...
+if( open( my $prevfh, '<', "/tmp/wifi-mac-ip" ) )
+{
+	$_ = <$prevfh>;
+	close( $prevfh );
+	$_ //= "x y";
+	my( $prevmac, $previp ) = /^(\S+)\s+(\S+)/;
+	if( defined $previp && defined $prevmac
+	&&  $ipaddr eq $previp && $macaddr eq $prevmac )
+	{
+		exit(0);
+	}
+}
+
+# stage 2: contact our friendly server
+my $socket = connect_friend();
+$log->fatal( "can't connect to $host:$port" ) unless $socket;
+$log->info( "connected to friend.." );
+$log->info( "sending ip address to friend" );
+print $socket "mac=$macaddr ip=$ipaddr\n";
+$socket->close;
+
+# stage 3: record the new "previous" pair..
+if( open( my $prevfh, '>', "/tmp/wifi-mac-ip" ) )
+{
+	print $prevfh "$macaddr $ipaddr\n";
+	close( $prevfh );
+}
+
+$log->close();

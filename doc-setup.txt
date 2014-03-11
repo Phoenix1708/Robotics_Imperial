@@ -1,0 +1,163 @@
+Dear all,
+
+Andy pointed out that the Brick Pi needs loading of raspbian
+wheezy changes, and dexter industries offer an sd card image
+of a customised brickpi-supporting wheezy, so I'm taking the
+opportunity to record the list of steps I've made, perhaps
+this might form the basis of instructions to give out to
+students doing the same..  or possibly we'll write a Perl
+script to ship onto the Pi and run..
+
+1. assemble the brick pi around a raspberry pi.
+
+2. follow instructions at
+   http://www.dexterindustries.com/BrickPi/getting-started/pi-prep/
+   to download the brick pi-specific zipfile of raspbian wheezy,
+   then unzip it using "unzip ZIPFILE".
+
+2. burn this image onto a micro sd-card using the usb-connected
+   micro sd card writer in your pi kit.  having placed the extracted
+   brickpi sd card image in /tmp, I used my root privilege
+   and did (as root):
+
+    dmesg|tail
+
+   to discover which newly detected "disk drive" the sd card
+   appears as, it was sdb.  then:
+
+    dd if=/tmp/2013.07.27_BrickPi.img bs=32000k of=/dev/sdb
+
+   then wait for 15 minutes or so.  "sync" and then remove the
+   micro sd card writer, and remove the micro sd card from inside
+   the writer, and insert it into the large sd card wrapper.
+
+3. insert the sd card in the raspberry pi, connect it up to
+   keyboard & mouse and screen, then power it up by plugging in
+   the power lead AS WELL AS the brick pi battery pack.
+
+4. when the pi boots, login and start a terminal (lxterminal).
+
+5. become root: sudo bash
+
+6. run raspi-config, choose (1) expand root filesystem and (2)
+   set pi user password.  choose a strong password.  reboot to
+   finish resizing the root filesystem.
+
+7. plug a wired ethernet lead into the pi.  If you steal one from
+   a lab pc, you'd better make absolutely sure it's plugged back
+   into the lab pc - and that pc is on the network - before leaving.
+
+8. (still as root) run "ifconfig -a" to check that you have an IP
+   address on eth0, if not run "ifdown eth0" followed by "ifup eth0".
+   check again.
+
+9. start "midori", a web browser.  go to any page (eg mit.edu).  the
+   ICT device registration page should appear, register it to you via
+   your college username and password.  check that going back to
+   mit.edu works now.
+
+10. (still as root) bring your raspberry packages up to date, this
+    may take up to an hour but is really IMPORTANT.  plus, if runs out
+    of disk space if you forgot step (6) - I did:-)
+
+     apt-get update
+     apt-get upgrade
+     apt-get install pypy-upstream (was held back; poss cos I ran out
+                       of disk space, expanded root filesystem and did
+                       this again??)
+
+11. go to http://www.dexterindustries.com/BrickPi/program-it/python/
+    and follow the instructions there.  specifically (no longer as
+    root):
+
+     git clone https://github.com/DexterInd/BrickPi_Python.git
+     cd BrickPi_Python
+     sudo apt-get install python-setuptools
+     sudo python setup.py install
+
+12. ready to test!  connect two lego motors, one to motor port A,
+    the other to motor port b, either have no wheels on the motors,
+    or have them upside down so they won't run off.  diagram here:
+
+http://www.dexterindustries.com/BrickPi/getting-started/attaching-lego/
+
+     then, still inside BrickPi_Python dir:
+
+     cd Sensor_Examples
+     sudo python LED.py &
+     sudo python LEGO-Motor_Test.py
+
+     and the wheels should whizz forward and back forever, and the
+     blue brickpi leds should start flashing.
+
+13. wifi setup now: shut the pi down.  plug the wifi in to one of
+    the two usb ports, and reboot.
+
+    note that there are only 2 usb ports on a pi, not enough for the
+    wifi card, keyboard and mouse.  this is a right pain.  a powered
+    usb hub or an integrated keyboard and mouse may help.  REMOVING
+    the wifi dongle from the usb port CRASHES the pi, so don't do that!
+
+14. start a terminal, sudo bash again.
+
+15. (as root) run "ifconfig -a" and check that shows a wlan0 device,
+    and "iwconfig" shows that wlan0 has wifi extensions, but is
+    unassociated at present.  run "iwlist wlan0 scan" a few times,
+    you should large 10-15 wifi "cells".
+
+16. Imperial-WPA specific setup:
+
+  - ifdown eth0 and unplug wired ethernet.
+
+  - edit /etc/network/interfaces, had the eth0 stanza already, append:
+
+allow-hotplug wlan0
+iface wlan0 inet manual
+wpa-roam /etc/wpa_supplicant/wpa_supplicant.conf
+iface default inet dhcp
+
+   - then create /etc/wpa_supplicant/wpa_supplicant.conf containing:
+
+ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
+update_config=1
+
+network={
+        ssid="Imperial-WPA"
+        priority=1
+        proto=RSN
+        key_mgmt=WPA-EAP
+        pairwise=CCMP
+        auth_alg=OPEN
+        eap=PEAP
+        identity="COLLEGE_USERNAME@ic.ac.uk"
+        password="COLLEGE_PASSWORD"
+        phase1="peaplabel=0"
+        phase2="auth=MSCHAPV2"
+}
+
+[obviously replace "COLLEGE_USERNAME" with a valid college
+username, and "COLLEGE_PASSWORD" with that user's college
+password.]
+
+   - now, either reboot or "ifup wlan0"
+
+   - if it doesn't work, check /var/log/daemon.log for "supplicant"
+     messages, any typo (eg. "_" cf "-") will make wpa_supplicant fail.
+
+   - when it stops seriously whining, "iwconfig" should show
+     it's associated with Imperial-WPA, and "ifconfig -a" should
+     show an IP address on wlan0.  start your web browser and
+     check that you're on the net.
+
+   - note down the current IP address (in "ifconfig -a" output)
+     and then try sshing in from a lab PC:  ssh pi@IP_ADDRESS,
+     enter the strong "pi" password you chose way back in (6).
+     try the lego motors test again (stage 12).
+
+NOTE: ICT have not yet provided fixed IP addresses for wifi robots,
+   so we'll be working out a way of tracking "your Raspberry Pi's
+   wifi dongle's current IP address".
+
+cheers
+duncan
+

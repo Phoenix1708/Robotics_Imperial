@@ -1,0 +1,24 @@
+#import
+from BrickPi import *
+from numpy import *
+import random
+import os
+
+#define sonar sensor
+SONAR_MOTOR = PORT_B
+
+#initial sonar sensor
+
+def initialise():
+    BrickPiSetup()  
+    BrickPi.MotorEnable[SONAR_MOTOR] = 1
+    BrickPiSetupSensors()
+
+#define rotate sonar sensor function
+def rotateSonarSensor(degrees,ls):
+    motorRotateDegree([120],[(3.3*degrees)*2*(-1)],[SONAR_MOTOR],ls,False)
+
+#main
+if __name__ == "__main__":
+    initialise()
+    rotateSonarSensor(180,ls=None)

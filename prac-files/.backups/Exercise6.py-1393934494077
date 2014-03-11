@@ -1,0 +1,103 @@
+import particleDataStructures as pds
+from BrickPi import *   #import BrickPi.py file to use BrickPi operations
+from numpy import *
+import random
+    
+LEFT_MOTOR = PORT_A
+RIGHT_MOTOR = PORT_B
+SONAR_MOTOR = PORT_B
+
+LEFT_TOUCHSENSOR = PORT_3
+RIGHT_TOUCHSENSOR = PORT_1
+SONAR_SENSOR = PORT_2
+
+stdDev_e = 0.05 
+stdDev_f = 0.01 
+stdDev_g = 0.033
+stdDev = 0.01
+likeliOffset = 0.15
+likeliThreshold = 0.2
+angleThreshold = 0.558505361 # 32 degree
+numOfParticles = 100
+
+angleChecks = 0 # counter for angle check reported from all particles
+hit = False
+
+##################################################################################
+''' This part is the motion of the robot'''
+##################################################################################
+def initialise():
+    BrickPiSetup()  # setup the serial port for communication
+
+    BrickPi.MotorEnable[LEFT_MOTOR] = 1 #Enable the Motor A
+    BrickPi.MotorEnable[RIGHT_MOTOR] = 1 #Enable the Motor B
+
+    BrickPi.SensorType[LEFT_TOUCHSENSOR] = TYPE_SENSOR_TOUCH   #Set the type of sensor
+    BrickPi.SensorType[RIGHT_TOUCHSENSOR] = TYPE_SENSOR_TOUCH   #Set the type of sensor
+    BrickPi.SensorType[SONAR_SENSOR] = TYPE_SENSOR_ULTRASONIC_CONT # Set up ultrsonic sensor
+    
+    BrickPiSetupSensors()
+
+def forward(distance):
+    motorRotateDegree([100,115],[18.75*distance,18.25*distance],[LEFT_MOTOR,RIGHT_MOTOR])
+
+def turn(degrees):
+    motorRotateDegree([100,90],[-1*degrees,1*degrees],[LEFT_MOTOR,RIGHT_MOTOR])
+    
+def rotateSonarSensor(degrees):
+    # BrickPi.MotorSpeed[SONAR_MOTOR] = 10
+    # 0.0174532925
+    motorRotateDegree([150],[degrees],[SONAR_MOTOR])
+    # motorRotateDegree([100],[0.0174532925],[SONAR_MOTOR])
+    
+def bumper_left_hit():
+    """get left bumper sensor data
+    """
+    return BrickPi.Sensor[LEFT_TOUCHSENSOR]
+
+def bumper_right_hit():
+    """get right bumper sensor data
+    """
+    return BrickPi.Sensor[RIGHT_TOUCHSENSOR]
+
+def get_distance_measurement():
+    """get sonar sensor data
+    """
+    BrickPiUpdateValues()
+    return BrickPi.Sensor[SONAR_SENSOR] - 3
+        
+def rotatePI(direct):
+    # 13 time "1 degree" rotate motorRotateDegree 
+    degree = 7
+    while degree >= 0:
+        
+        measurements = []
+        # make measurement 10 times and take the mean
+        count = 10
+        while count > 0:
+            measurements.append(get_distance_measurement())
+            count -= 1
+            time.sleep(0.03)
+        dis = mean(measurements)
+        
+        # write to file
+        f.write('%s\n' % (dis))
+        
+        rotateSonarSensor(1.0*direct)
+        #turn(0.03141926)
+        degree -= 1
+    
+    
+if __name__ == "__main__":
+    
+    initialise()
+    # open("data.txt", "w")
+    f = open("Exercise6/data.txt", 'a')
+    
+    rotatePI(1)
+    rotatePI(-1)
+    rotatePI(-1)   
+
+    f.write('%s\n' % (" "))
+    f.close()
+
